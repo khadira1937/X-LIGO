@@ -353,12 +353,6 @@ This makes X-LiGo a perfect example of **decentralized, intelligent, user-protec
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 📞 Support
-
-- **Documentation**: [Wiki](wiki)
-- **Issues**: [GitHub Issues](issues)
-- **Discussions**: [GitHub Discussions](discussions)
-- **Email**: support@xligo.ai
 
 ---
 
