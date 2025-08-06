@@ -17,6 +17,10 @@ X-LiGo is an **AI-powered, autonomous agent** built on **JuliaOS** that protects
 - **Production-Grade Logic**: No hardcoded responses - all data flows from user registration through incident detection
 - **Autonomous Agent Workflow**: Complete end-to-end protection without human intervention
 
+## 🎥 **Demo Video**
+
+**Watch the full X-LiGo demonstration**: [Demo Video](https://drive.google.com/file/d/1todAUgAr1F62JifWjTuSQsEEVynfhntj/view?usp=sharing)
+
 ## 🧠 **JuliaOS Integration**
 
 X-LiGo demonstrates advanced JuliaOS agent capabilities:
