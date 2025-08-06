@@ -9,6 +9,28 @@ include("core/types.jl"); using .Types
 include("core/config.jl"); using .Config
 include("core/utils.jl"); using .Utils
 
+# ---- User management modules ----
+include("user/UserManagement.jl"); using .UserManagement
+
+# ---- Position discovery modules ----
+include("positions/PositionFetcher.jl"); using .PositionFetcher
+
+# ---- Enhanced watcher modules ----
+include("watchers/IncidentStore.jl"); using .IncidentStore
+include("watchers/PositionWatcher.jl"); using .PositionWatcher
+include("watchers/WatcherEVM.jl"); using .EnhancedWatcherEVM
+include("watchers/WatcherSolana.jl"); using .EnhancedWatcherSolana
+
+# ---- Security modules ----
+include("security/AttackDetector.jl"); using .AttackDetector
+
+# ---- AI modules ----
+include("ai/ChatResponder.jl"); using .ChatResponder
+include("ai/DiscordNotifier.jl"); using .DiscordNotifier
+include("ai/AttackDetector.jl")
+const AIAttackDetector = AttackDetector
+include("security/AttackAlerter.jl"); using .AttackAlerter
+
 # ---- Agent modules (each file defines its own submodule) ----
 include("agents/watcher_solana.jl"); using .WatcherSolana
 include("agents/watcher_evm.jl"); using .WatcherEVM
@@ -26,6 +48,8 @@ include("matching_coordinator.jl"); using .MatchingCoordinator
 
 # ---- API modules ----
 include("api/server.jl"); using .ApiServer
+include("api/routes_users.jl"); using .UserRoutes
+include("api/routes_positions.jl"); using .PositionRoutes
 
 # ---- Public API ----
 export run_system_demo, test_system, start_swarm, stop_swarm, get_system_status

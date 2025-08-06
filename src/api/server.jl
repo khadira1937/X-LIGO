@@ -135,151 +135,147 @@ function create_router()
                     []
                 end
                 
-                health = Dict("status" => "ok", "agents" => agents)
+                # Get user monitoring info
+                monitored_users = try
+                    if isdefined(Main, :XLiGo) && isdefined(Main.XLiGo, :UserManagement)
+                        Main.XLiGo.UserManagement.get_monitored_user_count()
+                    else
+                        0
+                    end
+                catch e
+                    @warn "Failed to get monitored user count" exception=e
+                    0
+                end
+                
+                # Get positions cache info
+                positions_cached = try
+                    if isdefined(Main, :XLiGo) && isdefined(Main.XLiGo, :PositionFetcher)
+                        cache_stats = Main.XLiGo.PositionFetcher.get_positions_cache_stats()
+                        get(cache_stats, "cached_positions", 0)
+                    else
+                        0
+                    end
+                catch e
+                    @warn "Failed to get positions cache info" exception=e
+                    0
+                end
+                
+                # Get enhanced watcher status
+                evm_watcher_status = try
+                    if isdefined(Main, :XLiGo) && isdefined(Main.XLiGo, :EnhancedWatcherEVM)
+                        Main.XLiGo.EnhancedWatcherEVM.get_monitoring_status()
+                    else
+                        Dict("active_users" => 0, "total_positions_cached" => 0)
+                    end
+                catch e
+                    @warn "Failed to get EVM watcher status" exception=e
+                    Dict("active_users" => 0, "total_positions_cached" => 0)
+                end
+                
+                solana_watcher_status = try
+                    if isdefined(Main, :XLiGo) && isdefined(Main.XLiGo, :EnhancedWatcherSolana)
+                        Main.XLiGo.EnhancedWatcherSolana.get_monitoring_status()
+                    else
+                        Dict("active_users" => 0, "total_positions_cached" => 0)
+                    end
+                catch e
+                    @warn "Failed to get Solana watcher status" exception=e
+                    Dict("active_users" => 0, "total_positions_cached" => 0)
+                end
+                
+                # Calculate total monitored wallets more accurately
+                total_monitored_wallets = get(evm_watcher_status, "active_users", 0) + 
+                                        get(solana_watcher_status, "active_users", 0)
+                total_cached_positions = positions_cached + 
+                                       get(evm_watcher_status, "total_positions_cached", 0) +
+                                       get(solana_watcher_status, "total_positions_cached", 0)
+                
+                # Get mempool monitoring status
+                mempool_monitoring = get(ENV, "ENABLE_MEMPOOL_MONITORING", "false") == "true"
+                
+                # Get new position watcher status
+                position_watcher_data = try
+                    if isdefined(Main, :XLiGo) && isdefined(Main.XLiGo, :PositionWatcher)
+                        Main.XLiGo.PositionWatcher.get_health_data()
+                    else
+                        Dict(
+                            "monitored_users" => 0,
+                            "monitored_wallets" => Dict("evm" => 0, "solana" => 0),
+                            "positions_cached" => 0,
+                            "mempool_monitoring" => "disabled",
+                            "monitoring_active" => false
+                        )
+                    end
+                catch e
+                    @warn "Failed to get position watcher data" exception=e
+                    Dict(
+                        "monitored_users" => 0,
+                        "monitored_wallets" => Dict("evm" => 0, "solana" => 0),
+                        "positions_cached" => 0,
+                        "mempool_monitoring" => "disabled",
+                        "monitoring_active" => false
+                    )
+                end
+                
+                health = Dict(
+                    "status" => "ok", 
+                    "agents" => agents,
+                    "monitored_users" => get(position_watcher_data, "monitored_users", monitored_users),
+                    "monitored_wallets" => get(position_watcher_data, "monitored_wallets", Dict("evm" => 0, "solana" => 0)),
+                    "positions_cached" => get(position_watcher_data, "positions_cached", total_cached_positions),
+                    "mempool_monitoring" => get(position_watcher_data, "mempool_monitoring", mempool_monitoring ? "enabled" : "disabled"),
+                    "position_monitoring_active" => get(position_watcher_data, "monitoring_active", false),
+                    "last_monitoring_check" => get(position_watcher_data, "last_monitoring_check", nothing),
+                    "evm_watcher" => Dict(
+                        "active_users" => get(evm_watcher_status, "active_users", 0),
+                        "cached_positions" => get(evm_watcher_status, "total_positions_cached", 0)
+                    ),
+                    "solana_watcher" => Dict(
+                        "active_users" => get(solana_watcher_status, "active_users", 0),
+                        "cached_positions" => get(solana_watcher_status, "total_positions_cached", 0)
+                    )
+                )
                 response_body = JSON3.write(health)
                 return HTTP.Response(200, headers, response_body)
             elseif request.method == "POST" && request.target == "/chat"
-                # Chat endpoint for LLM interaction
+                # AI-powered chat endpoint for incident analysis
                 try
                     request_body = JSON3.read(IOBuffer(request.body))
                     message = get(request_body, "message", "")
                     
                     if isempty(message)
-                        error_response = Dict("error" => "Message is required", "example" => Dict("message" => "Why was this transaction flagged?"))
+                        error_response = Dict(
+                            "error" => "Message is required", 
+                            "status" => "error",
+                            "example" => Dict("message" => "What just happened?")
+                        )
                         return HTTP.Response(400, headers, JSON3.write(error_response))
                     end
                     
-                    # Check for security incident queries first
-                    message_lower = lowercase(message)
-                    security_keywords = [
-                        "what just happened", "what happened", "last attack", "latest incident", 
-                        "recent attack", "show me the report", "security report", "last report",
-                        "attack report", "what was blocked", "recent threat", "latest threat",
-                        "any attack", "incident report", "what's the status", "recent activity"
-                    ]
-                    
-                    is_security_query = any(keyword -> contains(message_lower, keyword), security_keywords)
-                    
-                    response = if is_security_query
-                        # Handle security incident queries
-                        try
-                            @info "Processing security incident query: '$message'"
-                            
-                            # Get latest security incident
-                            latest_incident = if isdefined(Main, :XLiGo) && isdefined(Main.XLiGo, :Coordinator)
-                                Main.XLiGo.Coordinator.get_latest_security_incident()
-                            else
-                                nothing
-                            end
-                            
-                            if latest_incident !== nothing
-                                # Format incident as security alert
-                                incident_type = get(latest_incident, "incident_type", "unknown")
-                                severity = get(latest_incident, "severity", "unknown")
-                                status = get(latest_incident, "status", "unknown")
-                                incident_id = get(latest_incident, "incident_id", "unknown")
-                                position_value = get(latest_incident, "position_value_usd", 0)
-                                
-                                # Extract additional details from metadata
-                                metadata = get(latest_incident, "metadata", Dict())
-                                attack_vector = get(metadata, "attack_vector", "unknown")
-                                protocol = get(metadata, "target_protocol", get(metadata, "protocol", "unknown"))
-                                
-                                # Calculate loss prevented (estimate 10% liquidation penalty)
-                                loss_prevented = position_value * 0.1
-                                
-                                # Format timestamp
-                                detected_at = get(latest_incident, "detected_at", "")
-                                time_str = if !isempty(string(detected_at))
-                                    try
-                                        if isa(detected_at, String)
-                                            # Parse and format the timestamp
-                                            parsed_time = DateTime(detected_at[1:19])  # Remove timezone part
-                                            Dates.format(parsed_time, "yyyy-mm-dd HH:MM:SS")
-                                        else
-                                            Dates.format(detected_at, "yyyy-mm-dd HH:MM:SS")
-                                        end
-                                    catch
-                                        "recently"
-                                    end
-                                else
-                                    "recently"
-                                end
-                                
-                                # Create formatted response
-                                status_emoji = if status == "protected" || status == "policy_blocked"
-                                    "✅ BLOCKED"
-                                elseif status == "detected"
-                                    "🔍 DETECTED"
-                                else
-                                    "⚠️ $(uppercase(status))"
-                                end
-                                
-                                response_text = """🚨 **Latest Security Alert**
-
-**Attack Type:** $(replace(incident_type, "_" => " ") |> titlecase)
-**Incident ID:** $(incident_id)
-**Severity:** $(uppercase(severity))
-**Status:** $(status_emoji)
-**Protocol:** $(titlecase(protocol))
-**Detected:** $(time_str)
-
-💰 **Financial Impact:**
-• Value Protected: \$$(Int(round(position_value)))
-• Loss Prevented: \$$(Int(round(loss_prevented)))
-
-🔍 **Attack Details:**
-• Vector: $(replace(attack_vector, "_" => " ") |> titlecase)
-• Classification: Sophisticated threat pattern detected
-
-🛡️ **X-LiGo Response:**
-The threat was automatically identified and neutralized by our AI-powered protection system. All positions remain secure."""
-                                
-                                Dict("response" => response_text, "status" => "real")
-                            else
-                                # No incidents found
-                                Dict("response" => "No recent security incidents detected. The X-LiGo protection system is monitoring all positions and has not identified any threats. All systems are operating normally.", "status" => "real")
-                            end
-                        catch e
-                            @error "Failed to get security incident: $e"
-                            Dict("response" => "I'm having trouble accessing the latest security reports. Please try again or contact support if the issue persists.", "status" => "error")
+                    # Generate AI response using ChatResponder
+                    ai_response = try
+                        if isdefined(Main, :XLiGo) && isdefined(Main.XLiGo, :ChatResponder)
+                            Main.XLiGo.ChatResponder.generate_response(message)
+                        else
+                            "🤖 **AI Chat Unavailable**\n\nChatResponder module not loaded. Please ensure the AI modules are properly initialized."
                         end
-                    else
-                        # Handle regular LLM queries
-                        try
-                            @info "Attempting to call LLM chat function..."
-                            
-                            # Check if the module is available
-                            if !isdefined(Main, :XLiGo)
-                                @error "Main.XLiGo not defined"
-                                Dict("response" => "XLiGo module not available", "status" => "error")
-                            elseif !isdefined(Main.XLiGo, :AnalystLLM)
-                                @error "AnalystLLM module not defined"
-                                Dict("response" => "AnalystLLM module not available", "status" => "error")
-                            elseif !hasmethod(Main.XLiGo.AnalystLLM.chat_with_analyst, (String,))
-                                @error "chat_with_analyst function not available"
-                                Dict("response" => "chat_with_analyst function not available", "status" => "error")
-                            else
-                                @info "Calling chat_with_analyst with message: '$message'"
-                                result = Main.XLiGo.AnalystLLM.chat_with_analyst(message)
-                                @info "LLM response received: $result"
-                                result
-                            end
-                        catch e
-                            @error "LLM chat failed" exception=e
-                            Dict("response" => "Sorry, I'm having trouble thinking right now. Error: $e", "status" => "error")
-                        end
+                    catch e
+                        @error "ChatResponder failed" error=e message=message
+                        "🚨 **AI Error**\n\nFailed to process your request. Please try again or check system logs."
                     end
                     
+                    # Build response
                     chat_response = Dict(
+                        "response" => ai_response,
+                        "status" => "success",
                         "message" => message,
-                        "response" => get(response, "response", "No response available"),
-                        "status" => get(response, "status", "unknown"),
-                        "timestamp" => Dates.format(now(), "yyyy-mm-ddTHH:MM:SS.sssZ")
+                        "timestamp" => Dates.format(now(), "yyyy-mm-ddTHH:MM:SS"),
+                        "ai_powered" => true
                     )
                     
-                    response_body = JSON3.write(chat_response)
-                    return HTTP.Response(200, headers, response_body)
+                    @info "Chat response generated" message_length=length(message) response_length=length(ai_response)
+                    
+                    return HTTP.Response(200, headers, JSON3.write(chat_response))
                 catch e
                     @error "Chat endpoint error" exception=e
                     error_response = Dict("error" => "Failed to process chat request", "message" => string(e))
@@ -335,6 +331,24 @@ The threat was automatically identified and neutralized by our AI-powered protec
                     @error "Incidents endpoint error" exception=e
                     error_response = Dict("error" => "Failed to register incident", "message" => string(e))
                     return HTTP.Response(500, headers, JSON3.write(error_response))
+                end
+            elseif startswith(request.target, "/api/users")
+                # Delegate user routes to UserRoutes module
+                try
+                    return Main.XLiGo.UserRoutes.handle_user_routes(request)
+                catch e
+                    @error "User routes delegation error" exception=e
+                    error_response = Dict("error" => "User routes not available", "message" => string(e))
+                    return HTTP.Response(503, headers, JSON3.write(error_response))
+                end
+            elseif startswith(request.target, "/api/positions")
+                # Delegate position routes to PositionRoutes module
+                try
+                    return Main.XLiGo.PositionRoutes.handle_position_routes(request)
+                catch e
+                    @error "Position routes delegation error" exception=e
+                    error_response = Dict("error" => "Position routes not available", "message" => string(e))
+                    return HTTP.Response(503, headers, JSON3.write(error_response))
                 end
             else
                 error_response = Dict("error" => "Not found", "path" => request.target)

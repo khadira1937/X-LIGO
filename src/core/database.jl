@@ -5,7 +5,9 @@ using Dates
 
 export init_db, save_incident, get_user, save_user, get_position, save_position, 
        update_position, delete_position, get_policy, save_policy, update_policy,
-       get_active_positions, save_incident_record, get_latest_incident
+       get_active_positions, save_incident_record, get_latest_incident,
+       store_user_profile, get_user_profile, store_user_policy, get_user_policy,
+       list_user_profiles, count_user_profiles
 
 # In-memory database for testing and demo
 const _DB = Dict{String, Any}(
@@ -13,7 +15,9 @@ const _DB = Dict{String, Any}(
     "positions" => Dict{String, Any}(),
     "policies" => Dict{String, Any}(),
     "incidents" => Dict{String, Any}(),
-    "config" => Dict{String, Any}()
+    "config" => Dict{String, Any}(),
+    "user_profiles" => Dict{String, Any}(),
+    "user_policies" => Dict{String, Any}()
 )
 
 function init_db(; url::AbstractString="memory://localhost")
@@ -204,6 +208,105 @@ end
 function save_incident_record(incident::Dict)::Bool
     save_incident(incident)
     return true
+end
+
+# User Profile Management Functions
+
+"""
+Store a user profile in the database (MongoDB in production, in-memory in demo)
+"""
+function store_user_profile(profile)::Bool
+    try
+        profile_dict = Dict(
+            "user_id" => profile.user_id,
+            "solana_wallet" => profile.solana_wallet,
+            "ethereum_wallet" => profile.ethereum_wallet,
+            "email" => profile.email,
+            "discord_id" => profile.discord_id,
+            "created_at" => profile.created_at,
+            "last_active" => profile.last_active
+        )
+        
+        _DB["user_profiles"][profile.user_id] = profile_dict
+        @info "User profile stored" user_id=profile.user_id
+        return true
+    catch e
+        @error "Failed to store user profile" exception=e
+        return false
+    end
+end
+
+"""
+Get a user profile from the database
+"""
+function get_user_profile(user_id::String)
+    try
+        return get(_DB["user_profiles"], user_id, nothing)
+    catch e
+        @error "Failed to get user profile" exception=e user_id=user_id
+        return nothing
+    end
+end
+
+"""
+Store a user policy in the database
+"""
+function store_user_policy(policy)::Bool
+    try
+        policy_dict = Dict(
+            "user_id" => policy.user_id,
+            "max_daily_spend_usd" => policy.max_daily_spend_usd,
+            "max_per_incident_usd" => policy.max_per_incident_usd,
+            "target_health_factor" => policy.target_health_factor,
+            "critical_health_factor" => policy.critical_health_factor,
+            "auto_protection_enabled" => policy.auto_protection_enabled,
+            "allowed_strategies" => policy.allowed_strategies,
+            "notification_preferences" => policy.notification_preferences
+        )
+        
+        _DB["user_policies"][policy.user_id] = policy_dict
+        @info "User policy stored" user_id=policy.user_id
+        return true
+    catch e
+        @error "Failed to store user policy" exception=e
+        return false
+    end
+end
+
+"""
+Get a user policy from the database
+"""
+function get_user_policy(user_id::String)
+    try
+        return get(_DB["user_policies"], user_id, nothing)
+    catch e
+        @error "Failed to get user policy" exception=e user_id=user_id
+        return nothing
+    end
+end
+
+"""
+List all user profiles
+"""
+function list_user_profiles()::Vector{Any}
+    try
+        return collect(values(_DB["user_profiles"]))
+    catch e
+        @error "Failed to list user profiles" exception=e
+        return []
+    end
+end
+
+"""
+Count user profiles
+"""
+function count_user_profiles()::Int
+    try
+        return length(_DB["user_profiles"])
+    catch e
+        @error "Failed to count user profiles" exception=e
+        return 0
+    end
 end
 
 end # module Database

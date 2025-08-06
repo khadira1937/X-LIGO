@@ -345,14 +345,6 @@ X-LiGo demonstrates how **JuliaOS agent primitives** can be used to build **real
 
 This makes X-LiGo a perfect example of **decentralized, intelligent, user-protective applications** built with JuliaOS agent technology.
 
-## 🏆 **Why X-LiGo Deserves First Prize**
-
-### **Technical Excellence**
-- ✅ **Real JuliaOS Integration**: Uses agent primitives for LLM, state management, and workflows
-- ✅ **Production-Grade Logic**: No hardcoded responses - all data flows from real user input
-- ✅ **Advanced AI Integration**: OpenAI GPT-3.5 for context-aware security analysis
-- ✅ **Multi-Chain Support**: Real Solana and Ethereum wallet monitoring
-
 ### **Innovation & Impact**
 - 🎯 **Real-World Problem**: Protects users from actual DeFi attacks (flash loans, liquidations)
 - 🚀 **Scalable Architecture**: Production-ready agent system with external integrations
@@ -502,13 +494,5 @@ julia --project=. test/performance_tests.jl
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 📞 Support
-
-- **Documentation**: [Wiki](wiki)
-- **Issues**: [GitHub Issues](issues)
-- **Discussions**: [GitHub Discussions](discussions)
-- **Email**: support@xligo.ai
-
----
 
 **⚠️ Disclaimer**: X-LiGo is experimental software. Use at your own risk in production environments. Always test thoroughly and understand the risks involved in DeFi protocols.
