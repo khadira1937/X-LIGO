@@ -27,8 +27,7 @@ include("security/AttackDetector.jl"); using .AttackDetector
 # ---- AI modules ----
 include("ai/ChatResponder.jl"); using .ChatResponder
 include("ai/DiscordNotifier.jl"); using .DiscordNotifier
-include("ai/AttackDetector.jl")
-const AIAttackDetector = AttackDetector
+# Note: AI AttackDetector removed to avoid conflict with security/AttackDetector.jl
 include("security/AttackAlerter.jl"); using .AttackAlerter
 
 # ---- Agent modules (each file defines its own submodule) ----
