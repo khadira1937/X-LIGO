@@ -20,4 +20,5 @@ tmp/
 .cache/
 Manifest.toml
 docs/build/
-.env.example
+# Include .env.example for users to see what variables they need
+# .env.example
