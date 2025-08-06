@@ -1,0 +1,655 @@
+"""
+Solana Watcher Agent
+
+Monitors lending positions on Solana blockchain, tracks health factors,
+and feeds data to the prediction engine. Integrates with Pyth oracles
+for real-time price data.
+"""
+module WatcherSolana
+
+using Dates
+using JSON
+using HTTP
+using Logging
+using WebSockets
+using Statistics
+
+# Import core modules
+using ..Types
+using ..Database
+using ..Utils
+using ..Config
+
+export start, stop, health, process_position_update
+
+# Agent state
+Base.@kwdef mutable struct SolanaWatcherState
+    running::Bool
+    config::Any
+    rpc_client::Union{Nothing, Any}
+    ws_connection::Union{Nothing, Any}
+    oracle_feeds::Dict{String, PriceOracle}
+    monitored_positions::Dict{String, Position}
+    last_scan_time::DateTime
+    scan_count::Int64
+    error_count::Int64
+    health_status::String
+end
+
+const AGENT_STATE = Ref{Union{Nothing, SolanaWatcherState}}(nothing)
+
+"""
+    ping_solana(cfg)::Bool
+
+Test Solana RPC connectivity.
+"""
+function ping_solana(cfg)::Bool
+    try
+        rpc_url = Config.getc(cfg, :solana_rpc_url, "")
+        if isempty(rpc_url)
+            @warn "No Solana RPC URL configured"
+            return false
+        end
+        
+        # Test with getHealth endpoint
+        headers = ["Content-Type" => "application/json"]
+        test_payload = Dict(
+            "jsonrpc" => "2.0",
+            "id" => 1,
+            "method" => "getHealth"
+        )
+        
+        response = HTTP.post(
+            rpc_url,
+            headers,
+            JSON.json(test_payload);
+            timeout=10
+        )
+        
+        if response.status == 200
+            result = JSON.parse(String(response.body))
+            return haskey(result, "result") && result["result"] == "ok"
+        end
+        
+        return false
+    catch e
+        @warn "Solana connectivity test failed" exception=e
+        return false
+    end
+end
+
+# Solana RPC methods
+const SOLANA_METHODS = Dict(
+    "get_account_info" => "getAccountInfo",
+    "get_program_accounts" => "getProgramAccounts",
+    "get_multiple_accounts" => "getMultipleAccounts",
+    "get_balance" => "getBalance"
+)
+
+"""
+    start(config)
+
+Start the Solana watcher agent.
+"""
+function start(config)
+    @info "🟢 Starting Solana Watcher Agent..."
+    
+    demo_mode = Config.getc(config, :demo_mode, true)
+    
+    try
+        # Check Solana connectivity in non-demo mode
+        if !demo_mode && !ping_solana(config)
+            error("Solana RPC connectivity test failed - required in real mode")
+        end
+        
+        # Use Config helper for safe access
+        sol_rpc = Config.getc(config, :solana_rpc_url, nothing)
+        
+        # Check if we should run in mock mode
+        if sol_rpc === nothing && demo_mode
+            @info "Running Solana Watcher in mock mode (no RPC URL)"
+            return (success=true, message="Solana Watcher started in mock mode", mode="mock")
+        end
+        
+        # Initialize agent state
+        AGENT_STATE[] = SolanaWatcherState(
+            running = false,
+            config = config,
+            rpc_client = nothing,
+            ws_connection = nothing,
+            oracle_feeds = Dict{String, PriceOracle}(),
+            monitored_positions = Dict{String, Position}(),
+            last_scan_time = now(),
+            scan_count = 0,
+            error_count = 0,
+            health_status = "starting"
+        )
+        
+        state = AGENT_STATE[]
+        
+        # Initialize RPC client and connections
+        if sol_rpc !== nothing
+            # In demo mode, we can skip real initialization
+            state.health_status = "running"
+            mode = demo_mode ? "mock" : "real"
+        else
+            state.health_status = "mock"
+            mode = "mock"
+        end
+        
+        state.running = true
+        
+        @info "✅ Solana Watcher Agent started successfully" mode=mode
+        return (success=true, message="Solana Watcher started successfully", mode=mode)
+        
+    catch e
+        @error "❌ Failed to start Solana Watcher Agent: $e"
+        if AGENT_STATE[] !== nothing
+            AGENT_STATE[].health_status = "error"
+        end
+        
+        # Initialize RPC client and connections
+        if sol_rpc !== nothing
+            initialize_rpc_client(state, sol_rpc)
+            initialize_oracle_feeds(state)
+            state.health_status = "running"
+            mode = "real"
+        else
+            state.health_status = "mock"
+            mode = "mock"
+        end
+        
+        state.running = true
+        
+        @info "✅ Solana Watcher Agent started successfully" mode=mode
+        return (success=true, message="Solana Watcher started successfully", mode=mode)
+        
+    catch e
+        @error "❌ Failed to start Solana Watcher Agent: $e"
+        if AGENT_STATE[] !== nothing
+            AGENT_STATE[].health_status = "error"
+        end
+        
+        if !demo_mode
+            # Re-throw error in real mode
+            rethrow(e)
+        end
+        
+        return (success=true, message="Solana Watcher started in mock mode (error: $e)", mode="mock")
+    end
+end
+
+"""
+    stop()
+
+Stop the Solana watcher agent.
+"""
+function stop()
+        if AGENT_STATE[] !== nothing
+            AGENT_STATE[].health_status = "error"
+        end
+        return (success=true, message="Solana Watcher started in mock mode (error: $e)", mode="mock")
+    end
+end
+
+"""
+    stop()
+
+Stop the Solana watcher agent.
+"""
+function stop()
+    if AGENT_STATE[] !== nothing
+        @info "🛑 Stopping Solana Watcher Agent..."
+        
+        state = AGENT_STATE[]
+        state.running = false
+        state.health_status = "stopping"
+        
+        # Close WebSocket connection
+        if state.ws_connection !== nothing
+            try
+                close(state.ws_connection)
+            catch e
+                @warn "⚠️ Error closing WebSocket: $e"
+            end
+        end
+        
+        state.health_status = "stopped"
+        @info "✅ Solana Watcher Agent stopped"
+    end
+end
+
+"""
+    health()
+
+Get agent health status.
+"""
+function health()
+    if AGENT_STATE[] === nothing
+        return Dict("status" => "not_initialized")
+    end
+    
+    state = AGENT_STATE[]
+    
+    return Dict(
+        "status" => state.health_status,
+        "running" => state.running,
+        "monitored_positions" => length(state.monitored_positions),
+        "scan_count" => state.scan_count,
+        "error_count" => state.error_count,
+        "last_scan" => state.last_scan_time,
+        "oracle_feeds" => length(state.oracle_feeds),
+        "uptime_seconds" => (now() - state.last_scan_time).value / 1000
+    )
+end
+
+# Internal functions
+
+"""
+    SolanaWatcherAgent
+
+Agent wrapper for external interface.
+"""
+struct SolanaWatcherAgent
+    state::SolanaWatcherState
+end
+
+function stop(agent::SolanaWatcherAgent)
+    stop()
+end
+
+function health(agent::SolanaWatcherAgent)
+    return health()
+end
+
+"""
+    SolanaRPCClient
+
+Simple Solana RPC client wrapper.
+"""
+struct SolanaRPCClient
+    endpoint::String
+    headers::Dict{String, String}
+end
+
+function SolanaRPCClient(endpoint::String)
+    return SolanaRPCClient(
+        endpoint,
+        Dict("Content-Type" => "application/json")
+    )
+end
+
+"""
+    rpc_call(client::SolanaRPCClient, method::String, params::Vector)
+
+Make an RPC call to Solana node.
+"""
+function rpc_call(client::SolanaRPCClient, method::String, params::Vector)
+    request_id = rand(1:1000000)
+    
+    payload = Dict(
+        "jsonrpc" => "2.0",
+        "id" => request_id,
+        "method" => method,
+        "params" => params
+    )
+    
+    try
+        response = HTTP.post(
+            client.endpoint,
+            headers = client.headers,
+            body = JSON.json(payload),
+            readtimeout = 30
+        )
+        
+        if response.status == 200
+            result = JSON.parse(String(response.body))
+            
+            if haskey(result, "error")
+                @error "Solana RPC error: $(result["error"])"
+                return nothing
+            end
+            
+            return get(result, "result", nothing)
+        else
+            @error "HTTP error: $(response.status)"
+            return nothing
+        end
+        
+    catch e
+        @error "RPC call failed: $e"
+        return nothing
+    end
+end
+
+"""
+    initialize_oracle_feeds(state::SolanaWatcherState)
+
+Initialize Pyth oracle price feeds.
+"""
+function initialize_oracle_feeds(state::SolanaWatcherState)
+    @info "Initializing Pyth oracle feeds..."
+    
+    # Common asset price feeds (Pyth devnet)
+    oracle_configs = [
+        ("SOL", "H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG"),  # SOL/USD
+        ("USDC", "5SSkXsEKQepHHAewytPVwdej4epN1nxgLVM84L4KXgy7"),  # USDC/USD
+        ("ETH", "JBu1AL4obBcCMqKBBxhpWCNUt136ijcuMZLFvTP7iWdB"),   # ETH/USD
+        ("BTC", "GVXRSBjFk6e6J3NbVPXohDJetcTjaeeuykUpbQF8UoMU"),   # BTC/USD
+    ]
+    
+    for (symbol, feed_id) in oracle_configs
+        try
+            # Fetch initial price from Pyth
+            price_data = fetch_pyth_price(state, feed_id)
+            
+            if price_data !== nothing
+                oracle = PriceOracle(
+                    provider = "pyth",
+                    feed_id = feed_id,
+                    price = price_data["price"],
+                    confidence = price_data["confidence"],
+                    last_update = now()
+                )
+                
+                state.oracle_feeds[symbol] = oracle
+                @debug "✅ Oracle feed initialized: $symbol @ $(oracle.price)"
+            end
+            
+        catch e
+            @warn "⚠️ Failed to initialize oracle for $symbol: $e"
+        end
+    end
+    
+    @info "✅ Initialized $(length(state.oracle_feeds)) oracle feeds"
+end
+
+"""
+    fetch_pyth_price(state::SolanaWatcherState, feed_id::String)
+
+Fetch price from Pyth oracle.
+"""
+function fetch_pyth_price(state::SolanaWatcherState, feed_id::String)
+    try
+        # Get account info for price feed
+        result = rpc_call(
+            state.rpc_client,
+            "getAccountInfo",
+            [feed_id, Dict("encoding" => "base64")]
+        )
+        
+        if result !== nothing && haskey(result, "value") && result["value"] !== nothing
+            # Parse Pyth price data (simplified)
+            # In production, use proper Pyth SDK for parsing
+            
+            # Mock price data for demo
+            base_price = 100.0 + rand() * 50.0  # Random price between 100-150
+            
+            return Dict(
+                "price" => base_price,
+                "confidence" => 0.1,
+                "status" => "trading"
+            )
+        end
+        
+    catch e
+        @debug "Error fetching Pyth price: $e"
+    end
+    
+    return nothing
+end
+
+"""
+    load_monitored_positions(state::SolanaWatcherState)
+
+Load active Solana positions from database.
+"""
+function load_monitored_positions(state::SolanaWatcherState)
+    try
+        # Get all active positions for Solana
+        all_positions = Database.get_active_positions()
+        solana_positions = filter(p -> p.chain == "solana", all_positions)
+        
+        for position in solana_positions
+            state.monitored_positions[position.position_id] = position
+        end
+        
+        @info "✅ Loaded $(length(state.monitored_positions)) Solana positions for monitoring"
+        
+    catch e
+        @error "❌ Failed to load monitored positions: $e"
+    end
+end
+
+"""
+    monitoring_loop(state::SolanaWatcherState)
+
+Main monitoring loop for position updates.
+"""
+function monitoring_loop(state::SolanaWatcherState)
+    @info "🔄 Starting Solana monitoring loop..."
+    
+    while state.running
+        try
+            state.last_scan_time = now()
+            
+            # Update oracle prices
+            update_oracle_prices(state)
+            
+            # Scan all monitored positions
+            scan_positions(state)
+            
+            state.scan_count += 1
+            
+            # Sleep until next scan
+            sleep(state.config.swarm_update_interval_ms / 1000)
+            
+        catch e
+            @error "❌ Error in monitoring loop: $e"
+            state.error_count += 1
+            
+            # Exponential backoff on errors
+            error_delay = Utils.exponential_backoff(state.error_count)
+            sleep(error_delay)
+        end
+    end
+    
+    @info "🔄 Solana monitoring loop stopped"
+end
+
+"""
+    update_oracle_prices(state::SolanaWatcherState)
+
+Update all oracle price feeds.
+"""
+function update_oracle_prices(state::SolanaWatcherState)
+    for (symbol, oracle) in state.oracle_feeds
+        try
+            price_data = fetch_pyth_price(state, oracle.feed_id)
+            
+            if price_data !== nothing
+                # Update oracle with new price
+                updated_oracle = PriceOracle(
+                    provider = oracle.provider,
+                    feed_id = oracle.feed_id,
+                    price = price_data["price"],
+                    confidence = price_data["confidence"],
+                    last_update = now()
+                )
+                
+                state.oracle_feeds[symbol] = updated_oracle
+            end
+            
+        catch e
+            @debug "Error updating oracle $symbol: $e"
+        end
+    end
+end
+
+"""
+    scan_positions(state::SolanaWatcherState)
+
+Scan all monitored positions for updates.
+"""
+function scan_positions(state::SolanaWatcherState)
+    for (position_id, position) in state.monitored_positions
+        try
+            # Fetch current position data from chain
+            updated_position = fetch_position_data(state, position)
+            
+            if updated_position !== nothing
+                # Calculate new health factor
+                calculate_position_health(state, updated_position)
+                
+                # Check if position needs attention
+                if requires_attention(updated_position)
+                    @info "⚠️ Position requires attention: $(position_id) (HF: $(updated_position.health_factor))"
+                    process_position_update(updated_position)
+                end
+                
+                # Update in memory and database
+                state.monitored_positions[position_id] = updated_position
+                Database.save_position(updated_position)
+            end
+            
+        catch e
+            @debug "Error scanning position $position_id: $e"
+        end
+    end
+end
+
+"""
+    fetch_position_data(state::SolanaWatcherState, position::Position)
+
+Fetch current position data from Solana chain.
+"""
+function fetch_position_data(state::SolanaWatcherState, position::Position)
+    try
+        # Get account info for the position
+        result = rpc_call(
+            state.rpc_client,
+            "getAccountInfo",
+            [position.account_id, Dict("encoding" => "base64")]
+        )
+        
+        if result !== nothing && haskey(result, "value") && result["value"] !== nothing
+            # Parse position data (simplified for demo)
+            # In production, decode actual program account data
+            
+            # For demo, simulate position changes
+            updated_position = deepcopy(position)
+            updated_position.last_scan_ts = now()
+            
+            # Simulate slight changes in collateral/debt
+            if !isempty(updated_position.collateral)
+                for i in 1:length(updated_position.collateral)
+                    # Add small random variation
+                    variation = 1.0 + (rand() - 0.5) * 0.02  # ±1% variation
+                    updated_position.collateral[i] = AssetAmount(
+                        updated_position.collateral[i].mint,
+                        updated_position.collateral[i].amount * variation,
+                        updated_position.collateral[i].decimals
+                    )
+                end
+            end
+            
+            return updated_position
+        end
+        
+    catch e
+        @debug "Error fetching position data: $e"
+    end
+    
+    return nothing
+end
+
+"""
+    calculate_position_health(state::SolanaWatcherState, position::Position)
+
+Calculate health factor for a position using current oracle prices.
+"""
+function calculate_position_health(state::SolanaWatcherState, position::Position)
+    try
+        collateral_value = 0.0
+        debt_value = 0.0
+        
+        # Calculate collateral value
+        for asset in position.collateral
+            if haskey(state.oracle_feeds, asset.mint)
+                oracle = state.oracle_feeds[asset.mint]
+                asset_value = asset.amount * oracle.price
+                collateral_value += asset_value
+            end
+        end
+        
+        # Calculate debt value
+        for asset in position.debt
+            if haskey(state.oracle_feeds, asset.mint)
+                oracle = state.oracle_feeds[asset.mint]
+                asset_value = asset.amount * oracle.price
+                debt_value += asset_value
+            end
+        end
+        
+        # Calculate health factor
+        ltv_ratio = 0.8  # Typical LTV for demo
+        position.health_factor = Utils.calculate_health_factor(collateral_value, debt_value, ltv_ratio)
+        position.last_health_update = now()
+        
+        # Update risk level
+        if position.health_factor < 1.05
+            position.risk_level = "critical"
+        elseif position.health_factor < 1.15
+            position.risk_level = "high"
+        elseif position.health_factor < 1.3
+            position.risk_level = "medium"
+        else
+            position.risk_level = "low"
+        end
+        
+    catch e
+        @error "Error calculating position health: $e"
+    end
+end
+
+"""
+    requires_attention(position::Position)
+
+Check if position requires immediate attention.
+"""
+function requires_attention(position::Position)
+    # Position needs attention if health factor is low or trending down
+    return position.health_factor < 1.2 || position.risk_level in ["high", "critical"]
+end
+
+"""
+    process_position_update(position::Position)
+
+Process position update and trigger swarm coordination if needed.
+"""
+function process_position_update(position::Position)
+    @info "🚨 Processing critical position update: $(position.position_id)"
+    
+    # This would trigger the swarm coordinator
+    # For now, just log the event
+    @info "Position details: HF=$(position.health_factor), Risk=$(position.risk_level)"
+    
+    # In the full implementation, this would:
+    # 1. Send to predictor agent for risk analysis
+    # 2. Trigger optimization if needed
+    # 3. Coordinate with other agents through swarm
+end
+
+"""
+    setup_websocket_connection(ws_url::String)
+
+Setup WebSocket connection for real-time updates.
+"""
+function setup_websocket_connection(ws_url::String)
+    # WebSocket setup for real-time position monitoring
+    # This would connect to Solana WebSocket API for account change notifications
+    @info "WebSocket connection setup (mock implementation)"
+    return nothing  # Mock for now
+end
+
+end # module WatcherSolana

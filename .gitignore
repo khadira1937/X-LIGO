@@ -1,0 +1,23 @@
+# X-LiGo Liquidation Protection System
+.env
+*.log
+node_modules/
+dist/
+build/
+coverage/
+.nyc_output/
+*.sqlite
+*.db
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+temp/
+tmp/
+.cache/
+Manifest.toml
+docs/build/
+.env.example
